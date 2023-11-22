@@ -199,7 +199,7 @@ gcloud projects remove-iam-policy-binding $PROJECT_ID \
     --member serviceAccount:$SA_NAME@$PROJECT_ID.iam.gserviceaccount.com \
     --role roles/viewer
 
-gcloud iam service-accounts delete $SA_NAME --quiet
+gcloud iam service-accounts delete $SA_NAME@$PROJECT_ID.iam.gserviceaccount.com --quiet
 
 kubectl delete namespace workload-identity
 ```
