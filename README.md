@@ -159,7 +159,7 @@ export FEDERATED_TOKEN=$(curl -s -X POST \
    https://sts.googleapis.com/v1/token | jq -r '.access_token')
 ```
 
-### This raw federated token only works for GCS and IAM APIs, so it could be used to impersonate the service account itself
+### This raw federated token only works for GCS and IAM APIs, so it could be used to impersonate the service account itself (or others where the Federated Service Account has a Service Account Token Creator Role)
 
 ### Create short-lived access token for service account using impersonation
 
