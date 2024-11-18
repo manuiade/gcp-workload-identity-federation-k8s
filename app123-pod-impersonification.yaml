@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app123-pod-impersonification
+spec:
+  serviceAccountName: app123
+  containers:
+  - image: google/cloud-sdk:alpine
+    name: app123
+    command: ["/bin/sh", "-c", "sleep 3600"]
+    volumeMounts:
+    - name: token
+      mountPath: "/var/run/service-account"
+      readOnly: true
+    - name: workload-identity-credential-configuration
+      mountPath: "/etc/workload-identity"
+      readOnly: true
+    env:
+    - name: GOOGLE_APPLICATION_CREDENTIALS
+      value: "/etc/workload-identity/credential-configuration.json"
+    - name: PROJECT_ID
+      value: <PROJECT_ID>
+    - name: PROJECT_NUMBER
+      value: "<PROJECT_NUMBER>"
+    - name: IDENTITY_POOL_NAME
+      value: <IDENTITY_POOL_NAME>
+    - name: IDENTITY_POOL_PROVIDER
+      value: <IDENTITY_POOL_NAME>
+  volumes:
+  - name: token
+    projected:
+      sources:
+      - serviceAccountToken:
+          audience: https://iam.googleapis.com/projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/<IDENTITY_POOL_NAME>/providers/<IDENTITY_POOL_NAME>
+          expirationSeconds: 3600
+          path: token
+  - name: workload-identity-credential-configuration
+    configMap:
+      name: credential-configuration-impersonification
