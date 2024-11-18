@@ -15,17 +15,17 @@ export PROJECT_ID=<PROJECT_ID>
 export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
 export K8S_NAMESPACE=dev-ns
 export K8S_SERVICE_ACCOUNT=app123
-export IDENTITY_POOL_NAME=local-minikube
-export IDENTITY_POOL_PROVIDER=local-minikube
+export IDENTITY_POOL_NAME=local-kubernetes
+export IDENTITY_POOL_PROVIDER=local-kubernetes
 export GCP_SERVICE_ACCOUNT=app123
 
 gcloud config set project $PROJECT_ID
 
 ## Inline substitutions for raw k8s manifests
-sed -i "s/<PROJECT_ID>/$PROJECT_ID/g" app123-pod-direct.yaml app123-pod-impersonification.yaml
-sed -i "s/<PROJECT_NUMBER>/$PROJECT_NUMBER/g" app123-pod-direct.yaml app123-pod-impersonification.yaml
-sed -i "s/<IDENTITY_POOL_NAME>/$IDENTITY_POOL_NAME/g" app123-pod-direct.yaml app123-pod-impersonification.yaml
-sed -i "s/<IDENTITY_POOL_PROVIDER>/$IDENTITY_POOL_PROVIDER/g" app123-pod-direct.yaml app123-pod-impersonification.yaml
+sed -i "s/<PROJECT_ID>/$PROJECT_ID/g" app123-pod-sts.yaml app123-pod-direct.yaml app123-pod-impersonification.yaml
+sed -i "s/<PROJECT_NUMBER>/$PROJECT_NUMBER/g" app123-pod-sts.yaml app123-pod-direct.yaml app123-pod-impersonification.yaml
+sed -i "s/<IDENTITY_POOL_NAME>/$IDENTITY_POOL_NAME/g" app123-pod-sts.yaml app123-pod-direct.yaml app123-pod-impersonification.yaml
+sed -i "s/<IDENTITY_POOL_PROVIDER>/$IDENTITY_POOL_PROVIDER/g" app123-pod-sts.yaml app123-pod-direct.yaml app123-pod-impersonification.yaml
 ```
 
 ## Local k8s setup
@@ -87,9 +87,7 @@ gcloud iam workload-identity-pools providers create-oidc $IDENTITY_POOL_PROVIDER
     --jwk-json-path cluster-jwks.json
 ```
 
-## Grant Access to Kubernetes Workload: Direct Access
-
-Grant WIF identity access to GCP:
+Grant access using Workload Identity principal:
 
 ```bash
 gcloud projects add-iam-policy-binding projects/$PROJECT_ID \
@@ -98,37 +96,13 @@ gcloud projects add-iam-policy-binding projects/$PROJECT_ID \
     --condition=None
 ```
 
-Create credential configuration files to instruct application environment fetch credentials for GCP following the OAuth and STS flow:
-
-```bash
-gcloud iam workload-identity-pools create-cred-config \
-    projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$IDENTITY_POOL_NAME/providers/$IDENTITY_POOL_PROVIDER \
-    --credential-source-file=/var/run/service-account/token \
-    --credential-source-type=text \
-    --output-file=credential-configuration.json
-```
-
-Create ConfigMap importing the credential configuration
-
-```bash
-kubectl create configmap credential-configuration \
-  --from-file credential-configuration.json \
-  --namespace dev-ns
-```
+## Grant Access to Kubernetes Workload: STS Flow
 
 Create workload identity pod using k8s projected voluems to inject KSA token audience and obtain auth token for GSA
 
 ```bash
-kubectl apply -f app123-pod-direct.yaml --namespace $K8S_NAMESPACE
-kubectl exec -it app123-pod-direct --namespace $K8S_NAMESPACE -- bash
-```
-
-Obtain access token using gcloud SDK (command inside pod):
-
-```bash
-gcloud auth login --cred-file $GOOGLE_APPLICATION_CREDENTIALS
-gcloud auth list
-export GCLOUD_ACCESS_TOKEN=$(gcloud auth print-access-token)
+kubectl apply -f app123-pod-sts.yaml --namespace $K8S_NAMESPACE
+kubectl exec -it app123-pod-sts --namespace $K8S_NAMESPACE -- bash
 ```
 
 Obtain access token by manually calling STS APIs (command inside pod):
@@ -149,17 +123,57 @@ export STS_ACCESS_TOKEN=$(curl -s -X POST \
 Test GCP API call in several ways (command inside pod):
 
 ```bash
-gcloud compute instances list --project $PROJECT_ID
-
-curl https://compute.googleapis.com/compute/v1/projects/$PROJECT_ID/zones/europe-west1-b/instances \
-    -H "Authorization: Bearer $GCLOUD_ACCESS_TOKEN"
-
 curl https://compute.googleapis.com/compute/v1/projects/$PROJECT_ID/zones/europe-west1-b/instances \
     -H "Authorization: Bearer $STS_ACCESS_TOKEN"
 
 exit
 ```
 
+
+## Grant Access to Kubernetes Workload: Direct Access
+
+Create credential configuration files to instruct application environment fetch credentials for GCP following the OAuth and STS flow automatically:
+
+```bash
+gcloud iam workload-identity-pools create-cred-config \
+    projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$IDENTITY_POOL_NAME/providers/$IDENTITY_POOL_PROVIDER \
+    --credential-source-file=/var/run/service-account/token \
+    --credential-source-type=text \
+    --output-file=credential-configuration.json
+```
+
+Create ConfigMap importing the credential configuration
+
+```bash
+kubectl create configmap credential-configuration \
+  --from-file credential-configuration.json \
+  --namespace $K8S_NAMESPACE
+```
+
+Create workload identity pod using k8s projected voluems to inject KSA token audience and obtain auth token for GSA
+
+```bash
+kubectl apply -f app123-pod-direct.yaml --namespace $K8S_NAMESPACE
+kubectl exec -it app123-pod-direct --namespace $K8S_NAMESPACE -- bash
+```
+
+Obtain access token using gcloud SDK (command inside pod):
+
+```bash
+gcloud auth login --cred-file $GOOGLE_APPLICATION_CREDENTIALS
+gcloud auth list
+export GCLOUD_ACCESS_TOKEN=$(gcloud auth print-access-token)
+```
+
+Test GCP API call in several ways (command inside pod):
+
+```bash
+gcloud compute instances list --project $PROJECT_ID
+
+curl https://compute.googleapis.com/compute/v1/projects/$PROJECT_ID/zones/europe-west1-b/instances \
+    -H "Authorization: Bearer $GCLOUD_ACCESS_TOKEN"
+exit
+```
 
 ## Grant Access to Kubernetes Workload: Impersonating GCP Service Account
 
@@ -207,7 +221,7 @@ kubectl apply -f app123-pod-impersonification.yaml --namespace $K8S_NAMESPACE
 kubectl exec -it app123-pod-impersonification --namespace $K8S_NAMESPACE -- bash
 ```
 
-Test manually by calling STS APIs to obtain GCP token from workload federation:
+Call STS APIs to obtain GCP token from workload federation:
 
 ```bash
 apk add jq
@@ -231,7 +245,7 @@ export ACCESS_TOKEN=$(curl -X POST --http1.1 \
     -H "Authorization: Bearer $FEDERATED_TOKEN" \
     -H "Content-Type: application/json" \
     -d '{"scope": ["https://www.googleapis.com/auth/cloud-platform"]}' \
-    "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$GCP_SERVICE_ACCOUNT@$PROJECT_ID.iam.gserviceaccount.com:generateAccessToken" \
+    "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/app123@$PROJECT_ID.iam.gserviceaccount.com:generateAccessToken" \
     | jq -r '.accessToken')
 ```
 Test with API call
@@ -267,8 +281,9 @@ Retry to access GCP resource with *app123-pod-direct* and verify error:
 
 ```bash
 kubectl exec -it app123-pod-direct --namespace $K8S_NAMESPACE -- bash
-gcloud auth list
-gcloud compute instances list
+gcloud auth login --cred-file $GOOGLE_APPLICATION_CREDENTIALS
+# If API calls still work is because a valid OAuth token was issued before applying the restriction on WIF with attribute condition
+exit
 ```
 
 Create another pod in the *prod-ns* namespace and verify access:
@@ -308,10 +323,10 @@ exit
 ## Cleanup
 
 ```bash
-sed -i "s/$PROJECT_ID/<PROJECT_ID>/g" app123-pod-direct.yaml app123-pod-impersonification.yaml
-sed -i "s/$PROJECT_NUMBER/<PROJECT_NUMBER>/g" app123-pod-direct.yaml app123-pod-impersonification.yaml
-sed -i "s/$IDENTITY_POOL_NAME/<IDENTITY_POOL_NAME>/g" app123-pod-direct.yaml app123-pod-impersonification.yaml
-sed -i "s/$IDENTITY_POOL_PROVIDER/<IDENTITY_POOL_PROVIDER>/g" app123-pod-direct.yaml app123-pod-impersonification.yaml
+sed -i "s/$PROJECT_ID/<PROJECT_ID>/g" app123-pod-sts.yaml app123-pod-direct.yaml app123-pod-impersonification.yaml
+sed -i "s/$PROJECT_NUMBER/<PROJECT_NUMBER>/g" app123-pod-sts.yaml app123-pod-direct.yaml app123-pod-impersonification.yaml
+sed -i "s/$IDENTITY_POOL_NAME/<IDENTITY_POOL_NAME>/g" app123-pod-sts.yaml app123-pod-direct.yaml app123-pod-impersonification.yaml
+sed -i "s/$IDENTITY_POOL_PROVIDER/<IDENTITY_POOL_PROVIDER>/g" app123-pod-sts.yaml app123-pod-direct.yaml app123-pod-impersonification.yaml
 
 gcloud projects remove-iam-policy-binding $PROJECT_ID \
     --member serviceAccount:$GCP_SERVICE_ACCOUNT@$PROJECT_ID.iam.gserviceaccount.com \
