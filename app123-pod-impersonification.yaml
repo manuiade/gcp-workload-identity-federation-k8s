@@ -17,7 +17,7 @@ spec:
       readOnly: true
     env:
     - name: GOOGLE_APPLICATION_CREDENTIALS
-      value: "/etc/workload-identity/credential-configuration.json"
+      value: "/etc/workload-identity/credential-configuration-impersonification.json"
     - name: PROJECT_ID
       value: <PROJECT_ID>
     - name: PROJECT_NUMBER

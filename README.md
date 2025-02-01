@@ -1,6 +1,6 @@
 # GCP Workload Identity Federation Kubernetes
 
-## Explanation (TODO)
+You can also refer to the <following article> to read more about how this demo works in detail.
 
 ## Demo Requirements
 
@@ -13,7 +13,8 @@
 ```bash
 export PROJECT_ID=<PROJECT_ID>
 export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
-export K8S_NAMESPACE=dev-ns
+export K8S_DEV_NAMESPACE=dev-ns
+export K8S_PRD_NAMESPACE=prd-ns
 export K8S_SERVICE_ACCOUNT=app123
 export IDENTITY_POOL_NAME=local-kubernetes
 export IDENTITY_POOL_PROVIDER=local-kubernetes
@@ -39,8 +40,26 @@ minikube start
 Create dedicated namespace and kubernetes service account and deployment using it:
 
 ```bash
-kubectl create namespace $K8S_NAMESPACE
-kubectl create sa $K8S_SERVICE_ACCOUNT -n $K8S_NAMESPACE
+kubectl create namespace $K8S_DEV_NAMESPACE
+kubectl create sa $K8S_SERVICE_ACCOUNT -n $K8S_DEV_NAMESPACE
+```
+
+Test generating a sample JWT token to see it claims on jwt.io:
+
+```bash
+kubectl create token $K8S_SERVICE_ACCOUNT -n $K8S_DEV_NAMESPACE --duration=600s
+```
+
+Get the issuer URI from k8s to use for WIP:
+
+```bash
+export ISSUER_URI=$(kubectl get --raw /.well-known/openid-configuration | jq -r .issuer)
+```
+
+Get the cluster JSON Web Key Set (JWKS):
+
+```bash
+kubectl get --raw /openid/v1/jwks > cluster-jwks.json
 ```
 
 ## Workload Identity Setup
@@ -64,18 +83,6 @@ gcloud iam workload-identity-pools create $IDENTITY_POOL_NAME \
     --display-name $IDENTITY_POOL_NAME
 ```
 
-Get the issuer URI from k8s to use for WIP:
-
-```bash
-export ISSUER_URI=$(kubectl get --raw /.well-known/openid-configuration | jq -r .issuer)
-```
-
-Get the cluster JSON Web Key Set (JWKS):
-
-```bash
-kubectl get --raw /openid/v1/jwks > cluster-jwks.json
-```
-
 Add the kubernetes cluster as Workload Identity pool:
 
 ```bash
@@ -92,7 +99,7 @@ Grant access using Workload Identity principal:
 ```bash
 gcloud projects add-iam-policy-binding projects/$PROJECT_ID \
     --role=roles/compute.viewer \
-    --member=principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$IDENTITY_POOL_PROVIDER/subject/system:serviceaccount:$K8S_NAMESPACE:$K8S_SERVICE_ACCOUNT \
+    --member=principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$IDENTITY_POOL_PROVIDER/subject/system:serviceaccount:$K8S_DEV_NAMESPACE:$K8S_SERVICE_ACCOUNT \
     --condition=None
 ```
 
@@ -101,8 +108,8 @@ gcloud projects add-iam-policy-binding projects/$PROJECT_ID \
 Create workload identity pod using k8s projected voluems to inject KSA token audience and obtain auth token for GSA
 
 ```bash
-kubectl apply -f app123-pod-sts.yaml --namespace $K8S_NAMESPACE
-kubectl exec -it app123-pod-sts --namespace $K8S_NAMESPACE -- bash
+kubectl apply -f app123-pod-sts.yaml --namespace $K8S_DEV_NAMESPACE
+kubectl exec -it app123-pod-sts --namespace $K8S_DEV_NAMESPACE -- bash
 ```
 
 Obtain access token by manually calling STS APIs (command inside pod):
@@ -118,6 +125,8 @@ export STS_ACCESS_TOKEN=$(curl -s -X POST \
    -d "scope=https://www.googleapis.com/auth/cloud-platform" \
    -d "subjectToken=$OIDC_TOKEN" \
    https://sts.googleapis.com/v1/token | jq -r '.access_token')
+
+echo $STS_ACCESS_TOKEN
 ```
 
 Test GCP API call in several ways (command inside pod):
@@ -132,7 +141,7 @@ exit
 
 ## Grant Access to Kubernetes Workload: Direct Access
 
-Create credential configuration files to instruct application environment fetch credentials for GCP following the OAuth and STS flow automatically:
+Create credential configuration file to instruct application environment fetch credentials for GCP following the OAuth and STS flow automatically:
 
 ```bash
 gcloud iam workload-identity-pools create-cred-config \
@@ -147,14 +156,14 @@ Create ConfigMap importing the credential configuration
 ```bash
 kubectl create configmap credential-configuration \
   --from-file credential-configuration.json \
-  --namespace $K8S_NAMESPACE
+  --namespace $K8S_DEV_NAMESPACE
 ```
 
 Create workload identity pod using k8s projected voluems to inject KSA token audience and obtain auth token for GSA
 
 ```bash
-kubectl apply -f app123-pod-direct.yaml --namespace $K8S_NAMESPACE
-kubectl exec -it app123-pod-direct --namespace $K8S_NAMESPACE -- bash
+kubectl apply -f app123-pod-direct.yaml --namespace $K8S_DEV_NAMESPACE
+kubectl exec -it app123-pod-direct --namespace $K8S_DEV_NAMESPACE -- bash
 ```
 
 Obtain access token using gcloud SDK (command inside pod):
@@ -184,7 +193,8 @@ gcloud iam service-accounts create $GCP_SERVICE_ACCOUNT
 
 gcloud projects add-iam-policy-binding $PROJECT_ID \
     --member serviceAccount:$GCP_SERVICE_ACCOUNT@$PROJECT_ID.iam.gserviceaccount.com \
-    --role roles/compute.viewer
+    --role roles/compute.viewer \
+    --condition=None
 ```
 
 Grant workload identity subject the Workload Identity User role to impersonate the service account using STS:
@@ -192,7 +202,7 @@ Grant workload identity subject the Workload Identity User role to impersonate t
 ```bash
 gcloud iam service-accounts add-iam-policy-binding $GCP_SERVICE_ACCOUNT@$PROJECT_ID.iam.gserviceaccount.com \
     --role=roles/iam.workloadIdentityUser \
-    --member="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$IDENTITY_POOL_PROVIDER/subject/system:serviceaccount:$K8S_NAMESPACE:$K8S_SERVICE_ACCOUNT"
+    --member="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$IDENTITY_POOL_PROVIDER/subject/system:serviceaccount:$K8S_DEV_NAMESPACE:$K8S_SERVICE_ACCOUNT"
 ```
 
 Create a credential configuration file to be used from k8s (notice this time we are passing the service account argument for impersonification):
@@ -211,14 +221,14 @@ Create ConfigMap importing the credential configuration:
 ```bash
 kubectl create configmap credential-configuration-impersonification \
   --from-file credential-configuration-impersonification.json \
-  --namespace $K8S_NAMESPACE
+  --namespace $K8S_DEV_NAMESPACE
 ```
 
 Create workload identity pod using k8s projected voluems to inject KSA token audience and obtain auth token for GSA
 
 ```bash
-kubectl apply -f app123-pod-impersonification.yaml --namespace $K8S_NAMESPACE
-kubectl exec -it app123-pod-impersonification --namespace $K8S_NAMESPACE -- bash
+kubectl apply -f app123-pod-impersonification.yaml --namespace $K8S_DEV_NAMESPACE
+kubectl exec -it app123-pod-impersonification --namespace $K8S_DEV_NAMESPACE -- bash
 ```
 
 Call STS APIs to obtain GCP token from workload federation:
@@ -253,15 +263,35 @@ Test with API call
 ```bash
 curl https://compute.googleapis.com/compute/v1/projects/$PROJECT_ID/zones/europe-west1-b/instances \
     -H "Authorization: Bearer $ACCESS_TOKEN"
+
+exit
 ```
 
-## Test Attribute Conditions
+## Attribute Mapping
 
 Create production namespace in k8s:
 
 ```bash
-kubectl create namespace prod-ns
-kubectl create sa $K8S_SERVICE_ACCOUNT -n prod-ns
+kubectl create namespace $K8S_PRD_NAMESPACE
+kubectl create sa $K8S_SERVICE_ACCOUNT -n $K8S_PRD_NAMESPACE
+```
+
+Test STS flow (token obtained, but 403 on access GCP resource):
+
+```bash
+export PRD_OIDC_TOKEN=$(kubectl create token $K8S_SERVICE_ACCOUNT -n $K8S_PRD_NAMESPACE --duration=600s --audience=https://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$IDENTITY_POOL_NAME/providers/$IDENTITY_POOL_PROVIDER)
+
+export PRD_ACCESS_TOKEN=$(curl -s -X POST \
+   -d "grantType=urn:ietf:params:oauth:grant-type:token-exchange" \
+   -d "audience=//iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$IDENTITY_POOL_NAME/providers/$IDENTITY_POOL_PROVIDER" \
+   -d "subjectTokenType=urn:ietf:params:oauth:token-type:jwt" \
+   -d "requestedTokenType=urn:ietf:params:oauth:token-type:access_token" \
+   -d "scope=https://www.googleapis.com/auth/cloud-platform" \
+   -d "subjectToken=$PRD_OIDC_TOKEN" \
+   https://sts.googleapis.com/v1/token | jq -r '.access_token')
+
+curl https://compute.googleapis.com/compute/v1/projects/$PROJECT_ID/zones/europe-west1-b/instances \
+    -H "Authorization: Bearer $PRD_ACCESS_TOKEN"
 ```
 
 Add attribute mapping and condition to allow viewer role only for *prod-ns* namespace
@@ -273,50 +303,93 @@ gcloud iam workload-identity-pools providers update-oidc $IDENTITY_POOL_PROVIDER
     --attribute-mapping="google.subject=assertion.sub,\
 attribute.namespace=assertion['kubernetes.io']['namespace'],\
 attribute.service_account_name=assertion['kubernetes.io']['serviceaccount']['name'],\
-attribute.pod=assertion['kubernetes.io']['pod']['name']" \
-    --attribute-condition "assertion['kubernetes.io']['namespace'] in ['prod-ns']"
+attribute.pod=assertion['kubernetes.io']['pod']['name']"
 ```
 
-Retry to access GCP resource with *app123-pod-direct* and verify error:
+Remove previously granted viewer role to dev k8s service account:
 
 ```bash
-kubectl exec -it app123-pod-direct --namespace $K8S_NAMESPACE -- bash
-gcloud auth login --cred-file $GOOGLE_APPLICATION_CREDENTIALS
-# If API calls still work is because a valid OAuth token was issued before applying the restriction on WIF with attribute condition
-exit
+gcloud projects remove-iam-policy-binding projects/$PROJECT_ID \
+    --role=roles/compute.viewer \
+    --member=principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$IDENTITY_POOL_PROVIDER/subject/system:serviceaccount:$K8S_DEV_NAMESPACE:$K8S_SERVICE_ACCOUNT \
+    --condition=None
 ```
 
-Create another pod in the *prod-ns* namespace and verify access:
-
-```bash
-kubectl create configmap credential-configuration \
-  --from-file credential-configuration.json \
-  --namespace prod-ns
-
-kubectl apply -f app123-pod-direct.yaml --namespace prod-ns
-kubectl exec -it app123-pod-direct --namespace prod-ns -- bash
-
-gcloud auth login --cred-file $GOOGLE_APPLICATION_CREDENTIALS
-gcloud auth list
-# Credentials are good but know we get error on unsufficient privileges
-gcloud compute instances list --project $PROJECT_ID
-exit
-```
-
-Grant Viewer role on principalSet based on namespace membership:
+Grant reader role to principalSet which includes any identity where pod name is *app123*:
 
 ```bash
 gcloud projects add-iam-policy-binding projects/$PROJECT_ID \
     --role=roles/compute.viewer \
-    --member=principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$IDENTITY_POOL_PROVIDER/attribute.namespace/prod-ns \
+    --member=principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$IDENTITY_POOL_PROVIDER/attribute.pod/app123-pod-direct \
     --condition=None
 ```
 
-Test again access to GCP (now it works):
+Test again STS flow outside the cluster:
 
 ```bash
-kubectl exec -it app123-pod-direct --namespace prod-ns -- bash
+export PRD_OIDC_TOKEN=$(kubectl create token $K8S_SERVICE_ACCOUNT -n $K8S_PRD_NAMESPACE --duration=600s --audience=https://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$IDENTITY_POOL_NAME/providers/$IDENTITY_POOL_PROVIDER)
+
+export PRD_ACCESS_TOKEN=$(curl -s -X POST \
+   -d "grantType=urn:ietf:params:oauth:grant-type:token-exchange" \
+   -d "audience=//iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$IDENTITY_POOL_NAME/providers/$IDENTITY_POOL_PROVIDER" \
+   -d "subjectTokenType=urn:ietf:params:oauth:token-type:jwt" \
+   -d "requestedTokenType=urn:ietf:params:oauth:token-type:access_token" \
+   -d "scope=https://www.googleapis.com/auth/cloud-platform" \
+   -d "subjectToken=$PRD_OIDC_TOKEN" \
+   https://sts.googleapis.com/v1/token | jq -r '.access_token')
+
+curl https://compute.googleapis.com/compute/v1/projects/$PROJECT_ID/zones/europe-west1-b/instances \
+    -H "Authorization: Bearer $PRD_ACCESS_TOKEN"
+```
+
+Create pod in prod namespace with credential config file and verify GCP access:
+
+```bash
+kubectl create configmap credential-configuration \
+  --from-file credential-configuration.json \
+  --namespace $K8S_PRD_NAMESPACE
+
+kubectl apply -f app123-pod-direct.yaml --namespace $K8S_PRD_NAMESPACE
+kubectl exec -it app123-pod-direct --namespace $K8S_PRD_NAMESPACE -- bash
+
+gcloud auth login --cred-file $GOOGLE_APPLICATION_CREDENTIALS
+gcloud auth list
 gcloud compute instances list --project $PROJECT_ID
+exit
+```
+
+## Attribute Conditions
+
+Add attribute condition to consent authentication only from production namespace:
+
+```bash
+gcloud iam workload-identity-pools providers update-oidc $IDENTITY_POOL_PROVIDER \
+    --location global \
+    --workload-identity-pool $IDENTITY_POOL_NAME \
+    --attribute-condition "assertion['kubernetes.io']['namespace'] in ['prd-ns']"
+```
+
+Retry to access GCP resource with *app123-pod-direct* in prod namespace, by recreating the pod and reauthenticate:
+
+```bash
+kubectl replace --force -f app123-pod-direct.yaml --namespace $K8S_PRD_NAMESPACE
+kubectl exec -it app123-pod-direct --namespace $K8S_PRD_NAMESPACE -- bash
+gcloud auth login --cred-file $GOOGLE_APPLICATION_CREDENTIALS
+gcloud auth list
+# Still works
+gcloud compute instances list --project $PROJECT_ID
+exit
+```
+
+Retry to access GCP resource with *app123-pod-direct* in dev namespace, by recreating the pod and reauthenticate:
+
+```bash
+kubectl replace --force -f app123-pod-direct.yaml --namespace $K8S_DEV_NAMESPACE
+kubectl exec -it app123-pod-direct --namespace $K8S_DEV_NAMESPACE -- bash
+
+# Will fail since attribute condition does not allow it
+# If API calls still work is because a valid OAuth token was issued before applying the restriction on WIF with attribute condition (be sure to recreate pod and reauthenticate)
+gcloud auth login --cred-file $GOOGLE_APPLICATION_CREDENTIALS
 exit
 ```
 
@@ -330,15 +403,13 @@ sed -i "s/$IDENTITY_POOL_PROVIDER/<IDENTITY_POOL_PROVIDER>/g" app123-pod-sts.yam
 
 gcloud projects remove-iam-policy-binding $PROJECT_ID \
     --member serviceAccount:$GCP_SERVICE_ACCOUNT@$PROJECT_ID.iam.gserviceaccount.com \
-    --role roles/compute.viewer
+    --role roles/compute.viewer \
+    --condition=None
 
 gcloud projects remove-iam-policy-binding projects/$PROJECT_ID \
     --role=roles/compute.viewer \
-    --member=principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$IDENTITY_POOL_PROVIDER/attribute.namespace/prod-ns
-
-gcloud projects remove-iam-policy-binding projects/$PROJECT_ID \
-    --role=roles/compute.viewer \
-    --member=principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$IDENTITY_POOL_PROVIDER/subject/system:serviceaccount:$K8S_NAMESPACE:$K8S_SERVICE_ACCOUNT
+    --member=principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$IDENTITY_POOL_PROVIDER/attribute.pod/app123-pod-direct \
+    --condition=None
 
 gcloud iam workload-identity-pools providers delete $IDENTITY_POOL_PROVIDER \
     --location global \
@@ -351,6 +422,6 @@ gcloud iam workload-identity-pools delete $IDENTITY_POOL_NAME \
 
 gcloud iam service-accounts delete $GCP_SERVICE_ACCOUNT@$PROJECT_ID.iam.gserviceaccount.com --quiet
 
-kubectl delete namespace $K8S_NAMESPACE
-kubectl delete namespace prod-ns
+kubectl delete namespace $K8S_DEV_NAMESPACE
+kubectl delete namespace $K8S_PRD_NAMESPACE
 ```
