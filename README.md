@@ -231,6 +231,14 @@ kubectl apply -f app123-pod-impersonification.yaml --namespace $K8S_DEV_NAMESPAC
 kubectl exec -it app123-pod-impersonification --namespace $K8S_DEV_NAMESPACE -- bash
 ```
 
+Authenticate with gcloud and test access:
+
+```bash
+gcloud auth login --cred-file $GOOGLE_APPLICATION_CREDENTIALS
+gcloud auth list
+gcloud compute instances list --project $PROJECT_ID
+```
+
 Call STS APIs to obtain GCP token from workload federation:
 
 ```bash
