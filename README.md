@@ -1,6 +1,6 @@
 # GCP Workload Identity Federation Kubernetes
 
-You can also refer to the <following article> to read more about how this demo works in detail.
+You can also refer to the [following article](https://medium.com/@manueliaderosa/understanding-gcp-workload-identity-federation-part-1-270605585e73) to read more about how this demo works in detail.
 
 ## Demo Requirements
 
